@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+    <meta name="theme-color" content="#0756b5">
+    <meta name="description" content="RJ 的黄金鱼汛：手机浏览器可直接玩的像素风钩金枪鱼跑酷小游戏。">
+    <title>RJ 的黄金鱼汛：Tuna Hook Rush</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23075bb9'/%3E%3Cpath d='M12 42c9-13 30-13 40 0' fill='none' stroke='%23ffd15c' stroke-width='5'/%3E%3Ccircle cx='32' cy='27' r='15' fill='%23fff'/%3E%3Crect x='20' y='23' width='24' height='13' rx='6' fill='%23131d2a'/%3E%3Ccircle cx='27' cy='29' r='2' fill='%239ee6d2'/%3E%3Ccircle cx='37' cy='29' r='2' fill='%239ee6d2'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main id="game-shell" aria-label="RJ 的黄金鱼汛游戏">
+      <canvas id="game" width="360" height="640" aria-label="游戏画面"></canvas>
+
+      <section id="hud" class="hud is-hidden" aria-label="游戏信息">
+        <div class="score-strip">
+          <span>分数 <b id="score">0</b></span>
+          <span>金币 <b id="coins">0</b></span>
+          <span>连击 <b id="combo">0</b></span>
+        </div>
+        <div id="shields" class="shields" aria-label="贝壳护盾"></div>
+        <div class="angle-meter" aria-label="钩爪角度">
+          <span>钩</span><i id="angle-needle"></i><em id="angle-label">0°</em>
+        </div>
+        <button id="pause-button" class="icon-button" type="button" aria-label="暂停">Ⅱ</button>
+        <div id="catch-card" class="catch-card is-hidden" aria-live="polite"></div>
+        <div id="combo-pop" class="combo-pop is-hidden"></div>
+        <div id="tap-prompt" class="tap-prompt is-hidden"></div>
+      </section>
+
+      <section id="start-screen" class="screen is-visible">
+        <div class="title-card">
+          <span class="eyebrow">PIXEL BEACH RUNNER</span>
+          <h1>RJ 的<br><strong>黄金鱼汛</strong></h1>
+          <p>Tuna Hook Rush</p>
+        </div>
+        <div class="start-rules">
+          <span>← → 换道</span><span>↑ 跳跃</span><span>↓ 滑铲</span>
+          <span>点按发钩 · 连点收线</span>
+        </div>
+        <button id="start-button" class="pixel-button primary" type="button">开始出海</button>
+        <p class="high-score">最高分 <b id="start-high-score">0</b></p>
+        <button id="open-settings" class="text-button" type="button">设置</button>
+      </section>
+
+      <section id="pause-screen" class="screen modal-screen" aria-modal="true" role="dialog" aria-label="暂停菜单">
+        <h2>暂停中</h2>
+        <button id="resume-button" class="pixel-button primary" type="button">继续航行</button>
+        <button id="restart-from-pause" class="pixel-button" type="button">重新开始</button>
+        <button id="home-from-pause" class="text-button" type="button">返回开始页</button>
+      </section>
+
+      <section id="result-screen" class="screen modal-screen" aria-modal="true" role="dialog" aria-label="结算">
+        <span id="result-kicker" class="eyebrow">本局结算</span>
+        <h2 id="result-title">满载返航！</h2>
+        <div class="result-grid">
+          <span>本局分数 <b id="result-score">0</b></span>
+          <span>抓鱼数量 <b id="result-fish">0</b></span>
+          <span>最大金枪鱼 <b id="result-largest">—</b></span>
+          <span>最高分 <b id="result-high">0</b></span>
+        </div>
+        <button id="restart-button" class="pixel-button primary" type="button">再来一局</button>
+        <button id="share-button" class="pixel-button" type="button">分享链接</button>
+        <button id="home-from-result" class="text-button" type="button">返回开始页</button>
+      </section>
+
+      <section id="settings-screen" class="screen modal-screen" aria-modal="true" role="dialog" aria-label="游戏设置">
+        <h2>设置</h2>
+        <label class="setting-row"><span>语音</span><input id="voice-toggle" type="checkbox" checked></label>
+        <label class="setting-row"><span>音量</span><input id="volume-range" type="range" min="0" max="1" step="0.05" value="0.8"></label>
+        <label class="setting-row"><span>语音频率</span><select id="voice-frequency"><option value="normal">正常</option><option value="low">较少</option></select></label>
+        <p class="setting-note">音频会在首次开始游戏后启用。</p>
+        <button id="close-settings" class="pixel-button primary" type="button">完成</button>
+      </section>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </main>
+    <script src="config.js"></script>
+    <script src="game.js"></script>
+  </body>
+</html>
