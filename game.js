@@ -3,7 +3,7 @@
 
   const C = window.GAME_CONFIG;
   const canvas = document.querySelector('#game');
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
   const shell = document.querySelector('#game-shell');
   const hud = document.querySelector('#hud');
   const screens = {
@@ -30,11 +30,27 @@
   let lastAt = performance.now();
   let pointer = null;
   let toastTimer = 0;
+  let frameId = 0;
+  let assetsReady = false;
+  let startRequested = false;
+  let hudDirty = true;
+  let lastHudAt = -Infinity;
+  const sceneCanvas = document.createElement('canvas');
+  sceneCanvas.width = C.designWidth;
+  sceneCanvas.height = C.designHeight;
+  const sceneCtx = sceneCanvas.getContext('2d', { alpha: false });
+  const shellNodes = Array.from({ length: C.shields }, () => {
+    const shell = document.createElement('span');
+    shell.className = 'shell';
+    shell.textContent = '◒';
+    ui.shields.append(shell);
+    return shell;
+  });
 
   class Pool {
     constructor(factory, limit = 30) { this.factory = factory; this.free = Array.from({ length: limit }, factory); }
     acquire() { return this.free.pop() || this.factory(); }
-    release(value) { Object.keys(value).forEach((key) => { delete value[key]; }); this.free.push(value); }
+    release(value) { if (this.free.length < 64) this.free.push(value); }
   }
   const eventPool = new Pool(() => ({}), 10);
   const particlePool = new Pool(() => ({}), 48);
@@ -54,14 +70,23 @@
   class VoiceManager {
     constructor() {
       this.audios = new Map(); this.lastPlayed = new Map(); this.lastSuccessAt = -Infinity; this.active = null; this.activePriority = -1;
+      const byFile = new Map();
       Object.entries(C.voice).forEach(([id, details]) => {
-        const audio = new Audio(details.file);
-        audio.preload = 'metadata'; audio.addEventListener('ended', () => { if (this.active === audio) { this.active = null; this.activePriority = -1; } });
+        let audio = byFile.get(details.file);
+        if (!audio) {
+          audio = new Audio(details.file);
+          audio.preload = 'auto';
+          audio.addEventListener('ended', () => { if (this.active === audio) { this.active = null; this.activePriority = -1; } });
+          byFile.set(details.file, audio);
+        }
         this.audios.set(id, audio);
       });
     }
     unlock() {
-      this.audios.forEach((audio) => { audio.volume = 0; audio.play().then(() => { audio.pause(); audio.currentTime = 0; audio.volume = profile.settings.volume; }).catch(() => {}); });
+      new Set(this.audios.values()).forEach((audio) => {
+        audio.volume = 0;
+        audio.play().then(() => { audio.pause(); audio.currentTime = 0; audio.volume = profile.settings.volume; }).catch(() => {});
+      });
     }
     play(id) {
       const config = C.voice[id]; const audio = this.audios.get(id); const now = performance.now() / 1000;
@@ -99,31 +124,48 @@
     ui.startHigh.textContent = profile.highScore;
     ui.voiceToggle.checked = profile.settings.voice; ui.volume.value = profile.settings.volume; ui.frequency.value = profile.settings.frequency;
   }
-  function updateHud() {
+  function markHudDirty() { hudDirty = true; }
+  function updateHud(force = false) {
+    if (!force && !hudDirty && now() - lastHudAt < 1 / C.hudUpdateHz) return;
     ui.score.textContent = game.score; ui.coins.textContent = profile.coins + game.coins; ui.combo.textContent = game.combo;
-    ui.shields.innerHTML = Array.from({ length: C.shields }, (_, index) => `<span class="shell ${index >= game.shields ? 'is-broken' : ''}">◒</span>`).join('');
+    shellNodes.forEach((shell, index) => shell.classList.toggle('is-broken', index >= game.shields));
     const angle = Math.round(activeHookAngle()); ui.angleNeedle.style.transform = `rotate(${angle}deg)`; ui.angleLabel.textContent = `${angle}°`;
     ui.catchCard.classList.toggle('is-hidden', now() > game.cardUntil || !game.pendingMessage); ui.catchCard.innerHTML = game.pendingMessage;
     ui.comboPop.classList.toggle('is-hidden', now() > game.comboUntil || game.combo < 2); ui.comboPop.textContent = `${game.combo} 连击！`;
     const reel = game.reel || game.netTrap;
     ui.tapPrompt.classList.toggle('is-hidden', !reel);
     if (reel) ui.tapPrompt.textContent = game.reel ? `连点收线 ${game.reel.taps}/${game.reel.required}` : `挣脱渔网 ${game.netTrap.taps}/${game.netTrap.required}`;
+    hudDirty = false;
+    lastHudAt = now();
   }
 
   function loadAssets() {
     rjImage = new Image(); tunaImage = new Image();
+    rjImage.decoding = 'async'; tunaImage.decoding = 'async';
     rjImage.src = C.assets.rj; tunaImage.src = C.assets.tuna;
+    const ready = (image) => image.decode ? image.decode().catch(() => {}) : new Promise((resolve) => {
+      image.addEventListener('load', resolve, { once: true }); image.addEventListener('error', resolve, { once: true });
+    });
+    Promise.all([ready(rjImage), ready(tunaImage)]).finally(() => {
+      assetsReady = true;
+      if (startRequested) { startRequested = false; launchGame(); }
+      renderOnce();
+    });
   }
 
   function startGame() {
     voice.unlock();
-    game = freshGame(); game.mode = 'playing'; lastAt = performance.now();
-    closeOverlays(); setHud(true); updateHud();
+    if (!assetsReady) { startRequested = true; showToast('RJ 正在准备出海…'); return; }
+    launchGame();
   }
-  function returnHome() { game = freshGame(); closeOverlays(); setScreen('start', true); setHud(false); updatePersistentUi(); }
+  function launchGame() {
+    game = freshGame(); game.mode = 'playing'; lastAt = performance.now(); markHudDirty();
+    closeOverlays(); setHud(true); updateHud(true); startLoop();
+  }
+  function returnHome() { game = freshGame(); closeOverlays(); setScreen('start', true); setHud(false); updatePersistentUi(); renderOnce(); }
   function togglePause() {
     if (game.mode === 'playing') { game.mode = 'paused'; setScreen('pause', true); }
-    else if (game.mode === 'paused') { game.mode = 'playing'; setScreen('pause', false); lastAt = performance.now(); }
+    else if (game.mode === 'paused') { game.mode = 'playing'; setScreen('pause', false); lastAt = performance.now(); startLoop(); }
   }
   function finishGame(gameOver) {
     if (game.mode === 'result') return;
@@ -131,16 +173,21 @@
     ui.resultKicker.textContent = gameOver ? '贝壳全碎' : '满载返航'; ui.resultTitle.textContent = gameOver ? 'Game Over' : '满载返航！';
     ui.resultScore.textContent = game.score; ui.resultFish.textContent = game.caught; ui.resultLargest.textContent = game.largest; ui.resultHigh.textContent = profile.highScore;
     setHud(false); setScreen('result', true); updatePersistentUi();
+    if (gameOver) voice.play('GAME_OVER');
   }
 
   function spawnEvent() {
-    const fishOnScreen = game.events.filter((event) => event.kind === 'fish').length;
-    const obstacleOnScreen = game.events.filter((event) => event.kind === 'obstacle').length;
+    let fishOnScreen = 0;
+    let obstacleOnScreen = 0;
+    const obstacleLanes = new Set();
+    const fishLanes = new Set();
+    for (const event of game.events) {
+      if (event.kind === 'fish') { fishOnScreen += 1; fishLanes.add(event.lane); }
+      else { obstacleOnScreen += 1; obstacleLanes.add(event.lane); }
+    }
     let kind = Math.random() < C.fishChance ? 'fish' : 'obstacle';
     if (kind === 'fish' && fishOnScreen >= C.maxFishOnScreen) kind = 'obstacle';
     if (kind === 'obstacle' && obstacleOnScreen >= C.maxObstaclesOnScreen) kind = 'fish';
-    const obstacleLanes = new Set(game.events.filter((event) => event.kind === 'obstacle').map((event) => event.lane));
-    const fishLanes = new Set(game.events.filter((event) => event.kind === 'fish').map((event) => event.lane));
     // Obstacles are limited to two distinct lanes, guaranteeing a safe route.
     // A fish never shares a lane with a live obstacle, which makes hook reads
     // and dodge choices unambiguous on a phone-sized screen.
@@ -151,7 +198,7 @@
     if (!viableLanes.length) return;
     const lane = viableLanes[Math.floor(Math.random() * viableLanes.length)];
     const event = eventPool.acquire();
-    Object.assign(event, { kind, lane, progress: 0, hit: false, captured: false, passed: false, id: `${Date.now()}-${Math.random()}` });
+    Object.assign(event, { kind, lane, progress: 0, hit: false, hookHit: false, captured: false, passed: false, fish: null, obstacle: null, leap: 0, id: `${Date.now()}-${Math.random()}` });
     if (kind === 'fish') {
       let fish = 'small';
       if (game.elapsed >= game.nextBigFishAt) { fish = 'large'; game.nextBigFishAt = game.elapsed + random(C.bigFishIntervalMin, C.bigFishIntervalMax); }
@@ -164,7 +211,8 @@
   }
   function releaseEvent(event) { eventPool.release(event); }
   function addParticles(x, y, color, count = 8) {
-    for (let index = 0; index < count; index += 1) {
+    const amount = Math.min(count, C.maxParticles - game.particles.length);
+    for (let index = 0; index < amount; index += 1) {
       const particle = particlePool.acquire();
       Object.assign(particle, { x, y, vx: random(-60, 60), vy: random(-80, 16), life: random(.34, .75), max: 0, color, size: random(2, 5) }); particle.max = particle.life;
       game.particles.push(particle);
@@ -273,21 +321,41 @@
     game.elapsed += dt; game.speed = C.speedStart + (C.speedEnd - C.speedStart) * clamp(game.elapsed / C.speedRampSeconds, 0, 1);
     game.playerX += (laneX(game.lane) - game.playerX) * Math.min(1, dt * 14);
     game.flash = Math.max(0, game.flash - dt); game.shake = Math.max(0, game.shake - dt);
-    if (game.mode === 'ending') { if (game.elapsed >= game.endingAt) { voice.play('GAME_OVER'); finishGame(true); } return; }
+    // GAME_OVER audio is intentionally owned by finishGame(true), so it can
+    // only begin after the death sequence has completed and the result screen
+    // is entered—not on an ordinary collision or the first two warnings.
+    if (game.mode === 'ending') { if (game.elapsed >= game.endingAt) finishGame(true); return; }
     if (game.elapsed >= game.nextEventAt) { spawnEvent(); game.nextEventAt = game.elapsed + random(C.eventIntervalMin, C.eventIntervalMax); }
     if (game.elapsed >= C.roundSeconds) { finishGame(false); return; }
     updateEvents(dt); updateHook(dt); updateParticles(dt); updateHud();
   }
 
   function pxRect(x, y, width, height, color) { ctx.fillStyle = color; ctx.fillRect(Math.round(x), Math.round(y), Math.round(width), Math.round(height)); }
+  function drawStaticScene() {
+    const gradient = sceneCtx.createLinearGradient(0, 0, 0, 430);
+    gradient.addColorStop(0, '#0a83dc'); gradient.addColorStop(.55, '#0065ba'); gradient.addColorStop(1, '#054e96');
+    sceneCtx.fillStyle = gradient; sceneCtx.fillRect(0, 0, 360, 430);
+    sceneCtx.fillStyle = '#e0c07f'; sceneCtx.fillRect(0, 425, 360, 215);
+    sceneCtx.fillStyle = '#f7d58b'; sceneCtx.fillRect(0, 438, 360, 202);
+    sceneCtx.strokeStyle = '#e0ae60'; sceneCtx.lineWidth = 2;
+    for (let y = 462; y < 640; y += 38) { sceneCtx.beginPath(); sceneCtx.moveTo(0, y); sceneCtx.lineTo(360, y + 20); sceneCtx.stroke(); }
+    const horizon = 424; const bottom = 640; sceneCtx.fillStyle = '#d7b16b';
+    for (let line = 0; line < 4; line += 1) {
+      const topX = 180 + (line - 1.5) * 10; const bottomX = (line - 1.5) * 115;
+      sceneCtx.beginPath(); sceneCtx.moveTo(topX, horizon); sceneCtx.lineTo(bottomX + 180, bottom); sceneCtx.lineTo(bottomX + 246, bottom); sceneCtx.closePath(); sceneCtx.fill();
+    }
+    sceneCtx.fillStyle = '#f7d58b';
+    for (let lane = 0; lane < 3; lane += 1) {
+      const topX = 180 + (lane - 1) * 12; const bottomX = 180 + (lane - 1) * 100;
+      sceneCtx.beginPath(); sceneCtx.moveTo(topX - 5, horizon); sceneCtx.lineTo(bottomX - 26, bottom); sceneCtx.lineTo(bottomX + 26, bottom); sceneCtx.lineTo(topX + 5, horizon); sceneCtx.closePath(); sceneCtx.fill();
+    }
+  }
   function drawOcean() {
-    const gradient = ctx.createLinearGradient(0, 0, 0, 430); gradient.addColorStop(0, '#0a83dc'); gradient.addColorStop(.55, '#0065ba'); gradient.addColorStop(1, '#054e96'); ctx.fillStyle = gradient; ctx.fillRect(0, 0, 360, 430);
-    for (let y = 88; y < 415; y += 42) { for (let x = ((Math.floor(game.elapsed * 18 + y) % 46) - 46); x < 360; x += 46) { pxRect(x, y, 22, 3, '#62c9f0'); pxRect(x + 14, y + 4, 17, 2, '#199fd4'); } }
-    ctx.fillStyle = '#e0c07f'; ctx.fillRect(0, 425, 360, 215); ctx.fillStyle = '#f7d58b'; ctx.fillRect(0, 438, 360, 202);
-    ctx.strokeStyle = '#e0ae60'; ctx.lineWidth = 2; for (let y = 462; y < 640; y += 38) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(360, y + 20); ctx.stroke(); }
-    const horizon = 424; const bottom = 640; ctx.fillStyle = '#d7b16b';
-    [0, 1, 2, 3].forEach((line) => { const t = line / 3; const topX = 180 + (line - 1.5) * 10; const bottomX = (line - 1.5) * 115; ctx.beginPath(); ctx.moveTo(topX, horizon); ctx.lineTo(bottomX + 180, bottom); ctx.lineTo(bottomX + 246, bottom); ctx.closePath(); ctx.fill(); });
-    ctx.fillStyle = '#f7d58b'; [0, 1, 2].forEach((lane) => { const topX = 180 + (lane - 1) * 12; const bottomX = 180 + (lane - 1) * 100; ctx.beginPath(); ctx.moveTo(topX - 5, horizon); ctx.lineTo(bottomX - 26, bottom); ctx.lineTo(bottomX + 26, bottom); ctx.lineTo(topX + 5, horizon); ctx.closePath(); ctx.fill(); });
+    ctx.drawImage(sceneCanvas, 0, 0);
+    const offset = (Math.floor(game.elapsed * 18) % 46) - 46;
+    for (let y = 88; y < 415; y += 42) {
+      for (let x = offset; x < 360; x += 46) { pxRect(x, y, 22, 3, '#62c9f0'); pxRect(x + 14, y + 4, 17, 2, '#199fd4'); }
+    }
   }
   function drawHook() {
     const hook = game.hook; const angle = activeHookAngle() * Math.PI / 180; const length = hook.mode === 'firing' ? 50 + hook.progress * 270 : 65;
@@ -323,15 +391,29 @@
     else { ctx.fillStyle = '#fff'; ctx.fillRect(-30, -57, 60, 70); ctx.fillStyle = '#151b28'; ctx.fillRect(-23, -45, 46, 26); }
     ctx.restore();
   }
-  function drawParticles() { game.particles.forEach((p) => { ctx.globalAlpha = p.life / p.max; pxRect(p.x, p.y, p.size, p.size, p.color); }); ctx.globalAlpha = 1; }
+  function drawParticles() { for (const p of game.particles) { ctx.globalAlpha = p.life / p.max; pxRect(p.x, p.y, p.size, p.size, p.color); } ctx.globalAlpha = 1; }
   function drawFlash() { if (game.flash > 0) { ctx.fillStyle = `rgba(255, 61, 81, ${game.flash * 1.25})`; ctx.fillRect(0, 0, 360, 640); } }
   function drawTime() { if (game.mode === 'playing' || game.mode === 'ending') { const ratio = clamp((C.roundSeconds - game.elapsed) / C.roundSeconds, 0, 1); pxRect(12, 62, 133, 5, '#07386f'); pxRect(12, 62, 133 * ratio, 5, '#ffdc70'); } }
   function draw() {
     ctx.clearRect(0, 0, 360, 640); drawOcean(); drawTime();
-    game.events.filter((event) => event.kind === 'fish').forEach(drawFish); game.events.filter((event) => event.kind === 'obstacle').forEach(drawObstacle);
+    for (const event of game.events) if (event.kind === 'fish') drawFish(event);
+    for (const event of game.events) if (event.kind === 'obstacle') drawObstacle(event);
     drawHook(); drawPlayer(); drawParticles(); drawFlash();
   }
-  function loop(timestamp) { const dt = Math.min(.05, (timestamp - lastAt) / 1000); lastAt = timestamp; update(dt); draw(); requestAnimationFrame(loop); }
+  function isRunning() { return game.mode === 'playing' || game.mode === 'ending'; }
+  function startLoop() { if (!frameId) frameId = requestAnimationFrame(loop); }
+  function renderOnce() { if (!frameId) frameId = requestAnimationFrame(loop); }
+  function loop(timestamp) {
+    frameId = 0;
+    if (isRunning()) {
+      const dt = Math.min(.05, (timestamp - lastAt) / 1000);
+      lastAt = timestamp;
+      update(dt); draw();
+      if (isRunning()) startLoop();
+    } else {
+      draw();
+    }
+  }
 
   function canvasPoint(event) { const rect = canvas.getBoundingClientRect(); return { x: (event.clientX - rect.left) * C.designWidth / rect.width, y: (event.clientY - rect.top) * C.designHeight / rect.height }; }
   function pointAngle(point) { return clamp(Math.atan2(point.x - 180, Math.max(20, point.y - 47)) * 180 / Math.PI, C.hookMinAngle, C.hookMaxAngle); }
@@ -382,5 +464,7 @@
   canvas.addEventListener('pointerdown', onPointerDown); canvas.addEventListener('pointermove', onPointerMove); canvas.addEventListener('pointerup', onPointerUp); canvas.addEventListener('pointercancel', () => { pointer = null; if (game.hook.mode === 'aiming') game.hook.mode = 'ready'; });
   window.addEventListener('keydown', onKeyDown); document.addEventListener('visibilitychange', () => { if (document.hidden && game.mode === 'playing') togglePause(); });
 
-  loadAssets(); updatePersistentUi(); returnHome(); requestAnimationFrame(loop);
+  ctx.imageSmoothingEnabled = false;
+  drawStaticScene();
+  loadAssets(); updatePersistentUi(); returnHome();
 })();
