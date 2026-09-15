@@ -26,6 +26,8 @@ window.GAME_CONFIG = Object.freeze({
   tapMaxMs: 200,
   normalSuccessCooldown: 15,
   perVoiceCooldown: 20,
+  hudUpdateHz: 12,
+  maxParticles: 48,
   lanes: [82, 180, 278],
   playerY: 540,
   assets: {
